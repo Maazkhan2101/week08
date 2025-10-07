@@ -9,9 +9,9 @@ on:
       - ".github/workflows/backend_ci.yml"
 
 env:
-  # e.g., maazkhanacr08.azurecr.io (Repository secret)
+  # Full login server, e.g. maazkhanacr08.azurecr.io (keep as a secret)
   ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-  # e.g., maazkhanacr08 (Repository secret)
+  # Short registry name, e.g. maazkhanacr08 (keep as a secret)
   ACR_NAME: ${{ secrets.ACR_NAME }}
   IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
 
@@ -88,7 +88,19 @@ jobs:
       - name: Azure Login
         uses: azure/login@v1
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}  # SDK-auth JSON
+          # Service principal JSON with clientId, clientSecret, subscriptionId, tenantId
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Ensure ACR_NAME is populated; if missing, derive it from ACR_LOGIN_SERVER
+      - name: Ensure ACR_NAME is set
+        run: |
+          if [ -z "${ACR_NAME}" ]; then
+            if [ -n "${ACR_LOGIN_SERVER}" ]; then
+              echo "ACR_NAME=${ACR_LOGIN_SERVER%%.azurecr.io}" >> $GITHUB_ENV
+            else
+              echo "ACR_LOGIN_SERVER not set"; exit 1
+            fi
+          fi
 
       - name: Login to Azure Container Registry
         run: az acr login --name ${{ env.ACR_NAME }}
