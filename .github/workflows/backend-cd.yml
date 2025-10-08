@@ -1,119 +1,47 @@
-name: CD - Deploy Backend Services to AKS
+name: Backend CD - Deploy to AKS
 
 on:
   workflow_dispatch:
-    inputs:
-      aks_cluster_name:
-        description: "Name of the AKS Cluster to deploy to"
-        required: true
-        default: "<aks_cluster_name>"
-      aks_resource_group:
-        description: "Resource Group of the AKS Cluster"
-        required: true
-        default: "<resource_group_name>"
-      aks_acr_name:
-        description: "Name of ACR"
-        required: true
-        default: "<acr_name>"
+  push:
+    branches: [ "main" ]
+
+env:
+  RESOURCE_GROUP: sit722-rg
+  AKS_CLUSTER: maazkahn-aks
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
 
 jobs:
   deploy_backend:
     runs-on: ubuntu-latest
-    environment: Production
-
-    outputs:
-      PRODUCT_API_IP: ${{ steps.get_product_ip.outputs.external_ip }}
-      ORDER_API_IP: ${{ steps.get_order_ip.outputs.external_ip }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Log in to Azure
+      - name: Azure Login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-          enable-AzPSSession: true
 
-      - name: Set Kubernetes context (get AKS credentials)
+      - name: Get AKS Credentials
+        run: az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER }}
+
+      - name: Set Kubernetes context
+        run: kubectl config current-context
+
+      - name: Deploy Product Service
         run: |
-          az aks get-credentials \
-            --resource-group "${{ github.event.inputs.aks_resource_group }}" \
-            --name "${{ github.event.inputs.aks_cluster_name }}" \
-            --overwrite-existing
+          kubectl set image deployment/product-service product-service=${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.IMAGE_TAG }} || \
+          kubectl apply -f k8s/backend/product_service_deployment.yaml
 
-      # Detect if AcrPull is already granted to the kubelet identity at the ACR scope
-      - name: Detect existing AcrPull
-        id: detect_acr_rbac
+      - name: Deploy Order Service
         run: |
-          KUBELET_OBJID=$(az aks show -g "${{ github.event.inputs.aks_resource_group }}" -n "${{ github.event.inputs.aks_cluster_name }}" --query "identityProfile.kubeletidentity.objectId" -o tsv)
-          ACR_ID=$(az acr show -n "${{ github.event.inputs.aks_acr_name }}" --query id -o tsv)
-          HAS=$(az role assignment list --assignee-object-id "$KUBELET_OBJID" --scope "$ACR_ID" --query "[?roleDefinitionName=='AcrPull'] | length(@)" -o tsv)
-          if [ "$HAS" = "1" ]; then
-            echo "SKIP_ATTACH_ACR=true" >> $GITHUB_ENV
-            echo "AcrPull already assigned; skipping attach."
-          else
-            echo "SKIP_ATTACH_ACR=false" >> $GITHUB_ENV
-          fi
+          kubectl set image deployment/order-service order-service=${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.IMAGE_TAG }} || \
+          kubectl apply -f k8s/backend/order_service_deployment.yaml
 
-      # Attach ACR only if missing; many classroom SPs lack Owner/UAA and will fail otherwise
-      - name: Attach ACR (only if needed)
-        if: env.SKIP_ATTACH_ACR != 'true'
-        # Optional: keep workflow moving even if attach fails due to permissions
-        continue-on-error: true
-        run: |
-          az aks update \
-            --name "${{ github.event.inputs.aks_cluster_name }}" \
-            --resource-group "${{ github.event.inputs.aks_resource_group }}" \
-            --attach-acr "${{ github.event.inputs.aks_acr_name }}"
-
-      - name: Deploy Backend Infrastructure (Namespace, ConfigMaps, Secrets, Databases)
-        run: |
-          echo "Deploying backend infrastructure..."
-          cd k8s/
-          kubectl apply -f configmaps.yaml
-          kubectl apply -f secrets.yaml
-          kubectl apply -f product-db.yaml
-          kubectl apply -f order-db.yaml
-
-      - name: Deploy Backend Microservices (Product, Order)
-        run: |
-          echo "Deploying backend microservices..."
-          cd k8s/
-          kubectl apply -f product-service.yaml
-          kubectl apply -f order-service.yaml
-
-      - name: Wait for Backend LoadBalancer IPs
-        run: |
-          echo "Waiting for Product, Order LoadBalancer IPs to be assigned (up to 5 minutes)..."
-          PRODUCT_IP=""
-          ORDER_IP=""
-          for i in $(seq 1 60); do
-            echo "Attempt $i/60 to get IPs..."
-            PRODUCT_IP=$(kubectl get service product-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            ORDER_IP=$(kubectl get service order-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            if [[ -n "$PRODUCT_IP" && -n "$ORDER_IP" ]]; then
-              echo "All backend LoadBalancer IPs assigned!"
-              echo "Product Service IP: $PRODUCT_IP"
-              echo "Order Service IP: $ORDER_IP"
-              break
-            fi
-            sleep 5
-          done
-          if [[ -z "$PRODUCT_IP" || -z "$ORDER_IP" ]]; then
-            echo "Error: One or more LoadBalancer IPs not assigned after timeout."
-            exit 1
-          fi
-          echo "PRODUCT_IP=$PRODUCT_IP" >> $GITHUB_ENV
-          echo "ORDER_IP=$ORDER_IP" >> $GITHUB_ENV
-
-      - name: Capture Product Service IP for Workflow Output
-        id: get_product_ip
-        run: echo "external_ip=${{ env.PRODUCT_IP }}" >> $GITHUB_OUTPUT
-
-      - name: Capture Order Service IP for Workflow Output
-        id: get_order_ip
-        run: echo "external_ip=${{ env.ORDER_IP }}" >> $GITHUB_OUTPUT
+      - name: Verify deployments
+        run: kubectl rollout status deployment/product-service && kubectl rollout status deployment/order-service
 
       - name: Logout from Azure
+        if: always()
         run: az logout

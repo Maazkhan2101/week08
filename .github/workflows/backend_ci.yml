@@ -3,15 +3,12 @@ name: Backend CI - Test, Build and Push Images to ACR
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ "dev" ]
     paths:
       - "backend/**"
       - ".github/workflows/backend_ci.yml"
 
 env:
-  # Secrets required:
-  #   ACR_LOGIN_SERVER = maazkhanacr08.azurecr.io
-  #   ACR_NAME         = maazkhanacr08
   ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
   ACR_NAME: ${{ secrets.ACR_NAME }}
   IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
@@ -46,13 +43,18 @@ jobs:
         ports: ["5433:5432"]
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+
+      - uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
@@ -88,26 +90,32 @@ jobs:
     needs: test_and_lint_backends
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Azure Login
         uses: azure/login@v1
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}  # clientId, clientSecret, subscriptionId, tenantId JSON
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Login to Azure Container Registry
-        run: az acr login --name ${{ env.ACR_NAME }}  # requires the short name (no .azurecr.io)
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-docker-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-docker-
 
       - name: Build and Push Product Service Image
         run: |
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/product_service:latest ./backend/product_service/
-          docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:latest
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.IMAGE_TAG }} ./backend/product_service/
+          docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.IMAGE_TAG }}
 
       - name: Build and Push Order Service Image
         run: |
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/order_service:latest ./backend/order_service/
-          docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:latest
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.IMAGE_TAG }} ./backend/order_service/
+          docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.IMAGE_TAG }}
 
       - name: Logout from Azure
         if: always()

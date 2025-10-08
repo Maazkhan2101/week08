@@ -1,29 +1,24 @@
-name: Frontend CI - Build & Push Image
+name: Frontend CI - Build and Push Images
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ "dev" ]
     paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend_ci.yml'
+      - "frontend/**"
+      - ".github/workflows/frontend_ci.yml"
 
 env:
-  # Full login server, set as GitHub secret (e.g., maazkhanacr08.azurecr.io)
   ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-  # Short registry name without suffix, set as GitHub secret (e.g., maazkhanacr08)
-  ACR_NAME:        ${{ secrets.ACR_NAME }}
-  # Unique image tag per run
-  IMAGE_TAG:       ${{ github.sha }}-${{ github.run_id }}
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
 
 jobs:
   build_and_push_frontend:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Azure Login
         uses: azure/login@v1
@@ -33,10 +28,21 @@ jobs:
       - name: Login to Azure Container Registry
         run: az acr login --name ${{ env.ACR_NAME }}
 
+      - name: Install Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install dependencies and build
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
       - name: Build and Push Frontend Image
         run: |
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:latest ./frontend/
-          docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:latest
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }} ./frontend/
+          docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }}
 
       - name: Logout from Azure
         if: always()
